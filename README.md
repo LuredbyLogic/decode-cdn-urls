@@ -1,7 +1,3 @@
-Of course. Here is a `README.md` file for the Python script, formatted in Markdown for GitHub.
-
----
-
 # CDN Image URL Decoder
 
 A simple, command-line Python script to decode CDN-processed image URLs and retrieve the original source URL.
