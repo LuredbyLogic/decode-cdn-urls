@@ -1,10 +1,10 @@
 import sys
 import re
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, parse_qs
 
 def find_original_image_url(cdn_url):
     """
-    Attempts to find the original image URL from a CDN-processed URL.
+    Attempts to find the original image URL from a CDN-processed URL using a multi-step, robust approach.
 
     Args:
         cdn_url: The URL of the image from the CDN.
@@ -12,44 +12,51 @@ def find_original_image_url(cdn_url):
     Returns:
         The likely original image URL, or None if it cannot be found.
     """
-    # First, decode the entire URL to handle any nested encoding
+    # --- Strategy 1: Look for the URL in query parameters ---
+    # Handles URLs like: ...?url=https%3A%2F%2Fexample.com%2Fimage.png
+    try:
+        parsed_url = urlparse(cdn_url)
+        query_params = parse_qs(parsed_url.query)
+        for key, values in query_params.items():
+            for value in values:
+                # Check if the query parameter value is itself a URL
+                if value.lower().startswith(('http://', 'https://')) or value.lower().startswith('http%3a'):
+                    return unquote(value)
+    except Exception:
+        pass # Ignore parsing errors and move to the next strategy
+
+    # --- Strategy 2: Look for embedded URLs in the path ---
+    # This is the fix for the reported issue.
     decoded_url = unquote(cdn_url)
+    
+    # Find all occurrences of 'http://' or 'https://'
+    # re.finditer provides the start index of each match
+    matches = list(re.finditer(r'https?://', decoded_url))
 
-    # Regex to find potential image URLs within the decoded URL
-    # This looks for http/https starting strings ending with a common image extension
-    potential_urls = re.findall(r'(https?://\S+\.(?:png|jpe?g|gif|bmp|tiff|webp))', decoded_url, re.IGNORECASE)
+    if len(matches) > 1:
+        # If we found more than one 'http(s)://', the last one is the embedded original URL
+        last_match_start_index = matches[-1].start()
+        potential_url = decoded_url[last_match_start_index:]
+        
+        # A final sanity check to ensure it looks like an image URL
+        if re.search(r'\.(?:png|jpe?g|gif|bmp|tiff|webp|svg)', potential_url, re.IGNORECASE):
+            return potential_url
 
+    # --- Fallback Strategy 3: Original regex, but only as a last resort ---
+    # This might still catch some edge cases, but it's less reliable.
+    potential_urls = re.findall(r'(https?://\S+\.(?:png|jpe?g|gif|bmp|tiff|webp|svg))', decoded_url, re.IGNORECASE)
     if potential_urls:
-        # Return the last found URL, as it's often the original source
-        return potential_urls[-1]
-
-    # Fallback for URLs where the protocol is not part of the encoded string
-    # (e.g., Cloudflare-style URLs)
-    parsed_url = urlparse(decoded_url)
-    path_parts = parsed_url.path.split('/')
-    for part in reversed(path_parts):
-        # Heuristic to check if a part looks like a domain name
-        if '.' in part and not part.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-             # Check the part of the url that comes after what we suspect is the domain
-            try:
-                # Find the index of the potential domain and reconstruct the rest of the URL
-                start_index = decoded_url.rfind(part)
-                # Check if the found part is indeed part of the path or the netloc
-                if start_index > decoded_url.find(parsed_url.netloc):
-                    reconstructed_url = "https://" + decoded_url[start_index:]
-                    # A simple check to see if it looks like a valid URL
-                    if re.match(r'^https?://\S+\.\S+', reconstructed_url):
-                        return reconstructed_url
-            except ValueError:
-                continue
-
+        # To avoid the original error, we ensure the found URL is not the same as the decoded input URL
+        # unless it is a direct link to an image.
+        if potential_urls[-1] != decoded_url or cdn_url.endswith(('.png', '.jpg', '.jpeg')):
+            return potential_urls[-1]
 
     return None
 
 if __name__ == "__main__":
-    # Ensure a URL is provided as a command-line argument
     if len(sys.argv) != 2:
-        print("Usage: python decode_url.py <url>")
+        print("Usage: python decode_url.py \"<url>\"")
+        print("\nNote: Always wrap the URL in double quotes to handle special characters.")
         sys.exit(1)
 
     input_url = sys.argv[1]
